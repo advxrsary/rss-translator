@@ -59,7 +59,7 @@ def translate_feed(original_feed_url, target_language='en'):
 
 class RSSRequestHandler(BaseHTTPRequestHandler):
     """HTTP Request handler class."""
-    def do_get(self):
+    def do_GET(self):
         """Handle GET requests."""
         query = urlparse(self.path).query
         query_components = parse_qs(query)
