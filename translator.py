@@ -5,10 +5,27 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Timer
 from urllib.parse import parse_qs, urlparse
 
+# Global dictionary to hold the cached RSS feeds
+cached_rss_feeds = {}
+
 # Function to translate text
 def translate_text(text, target_language='en'):
     translator = Translator()
     return translator.translate(text, dest=target_language).text
+
+
+# Function to detect language
+def detect_language(text):
+    translator = Translator()
+    return translator.detect(text).lang.upper()
+
+
+# Update a specific cached RSS feed
+def update_specific_feed(rss_url, dest_lang):
+    print(f"Updating cached RSS feed for {rss_url}...")
+    translated_feed = translate_feed(rss_url, dest_lang)
+    cached_rss_feeds[rss_url] = translated_feed
+    Timer(600, lambda: update_specific_feed(rss_url, dest_lang)).start()  # Update every 10 minutes
 
 # Function to fetch and translate RSS feed
 def translate_feed(original_feed_url, target_language='en'):
@@ -16,9 +33,19 @@ def translate_feed(original_feed_url, target_language='en'):
     original_feed = feedparser.parse(original_feed_url)
     fg.id(original_feed.feed.link)
     
-    # Translate and set the title dynamically
-    translated_title = translate_text(original_feed.feed.title, target_language)
+    # Detect language of original feed title
+    detected_language = detect_language(original_feed.feed.title)
+    
+    # Extract main domain name
+    domain_parts = urlparse(original_feed_url).netloc.split('.')
+    main_domain = domain_parts[-2].capitalize() if len(domain_parts) > 1 else domain_parts[0].capitalize()
+
+    # Detect language of original feed title
+    detected_language = detect_language(original_feed.feed.title)
+
+    translated_title = fr"{main_domain} {detected_language}->{target_language.upper()}"
     fg.title(translated_title)
+
     
     fg.link(href=original_feed.feed.link)
     fg.description(translate_text(original_feed.feed.description, target_language))
@@ -32,27 +59,19 @@ def translate_feed(original_feed_url, target_language='en'):
     
     return fg.rss_str(pretty=True)
 
-# Global dictionary to hold the cached RSS feeds
-cached_rss_feeds = {}
 
-# Function to update a specific cached RSS feed
-def update_specific_feed(rss_url):
-    print(f"Updating cached RSS feed for {rss_url}...")
-    translated_feed = translate_feed(rss_url)
-    cached_rss_feeds[rss_url] = translated_feed
-    Timer(600, lambda: update_specific_feed(rss_url)).start()
-
-# HTTP Server to serve the translated RSS feed
+# RSSRequestHandler class
 class RSSRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         query = urlparse(self.path).query
         query_components = parse_qs(query)
         rss_url = query_components.get('rss_url', [None])[0]
-        
+        dest_lang = query_components.get('dest_lang', ['en'])[0]  # Default to 'en' if not provided
+
         if rss_url:
             if rss_url not in cached_rss_feeds:
-                update_specific_feed(rss_url)
-            
+                update_specific_feed(rss_url, dest_lang)
+
             self.send_response(200)
             self.send_header('Content-type', 'application/rss+xml')
             self.end_headers()
@@ -62,6 +81,7 @@ class RSSRequestHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'text/plain')
             self.end_headers()
             self.wfile.write(b"Missing rss_url parameter.")
+
 
 # Main function to start the HTTP server
 def run():
