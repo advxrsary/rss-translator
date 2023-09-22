@@ -16,8 +16,14 @@ CACHED_RSS_FEEDS = {}
 
 def translate_text(text, target_language='en'):
     """Translate text to a target language."""
+    if text is None:
+        return "Translation error: No text provided."
     translator = Translator()
-    return translator.translate(text, dest=target_language).text
+    try:
+        return translator.translate(text, dest=target_language).text
+    except Exception as e:
+        return f"Translation error: {str(e)}"
+
 
 def detect_language(text):
     """Detect the language of a text."""
@@ -28,7 +34,7 @@ def update_specific_feed(rss_url, dest_lang):
     """Update a specific cached RSS feed."""
     print(f"Updating cached RSS feed for {rss_url}...")
     translated_feed = translate_feed(rss_url, dest_lang)
-    CACHED_RSS_FEEDS[rss_url] = translated_feed
+    CACHED_RSS_FEEDS[(rss_url, dest_lang)] = translated_feed
     Timer(600, lambda: update_specific_feed(rss_url, dest_lang)).start()
 
 def translate_feed(original_feed_url, target_language='en'):
@@ -67,16 +73,17 @@ class RSSRequestHandler(BaseHTTPRequestHandler):
         dest_lang = query_components.get('dest_lang', ['en'])[0]
 
         if rss_url:
-            if rss_url not in CACHED_RSS_FEEDS:
+            if (rss_url, dest_lang) not in CACHED_RSS_FEEDS:
                 update_specific_feed(rss_url, dest_lang)
             self.send_response(200)
-            self.send_header('Content-type', 'application/rss+xml')
+            self.send_header('Content-type', 'application/rss+xml; charset=utf-8')
             self.end_headers()
             self.wfile.write(
                 CACHED_RSS_FEEDS.get(
-                    rss_url, b"RSS feed is being updated, please try again later."
+                    (rss_url, dest_lang), b"RSS feed is being updated, please try again later."
                 )
             )
+
         else:
             self.send_response(400)
             self.send_header('Content-type', 'text/plain')
