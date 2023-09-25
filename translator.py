@@ -3,9 +3,10 @@ RSS Translator Service: An HTTP server for translating RSS feeds.
 Fetches RSS feeds in multiple languages, translates them to a specified language, and serves them.
 Supports caching and dynamic titling.
 """
-
+import logging
+from queue import Queue
+from threading import Thread, Timer
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Timer
 from urllib.parse import parse_qs, urlparse
 from feedgen.feed import FeedGenerator
 import feedparser
@@ -14,6 +15,16 @@ from googletrans import Translator
 # Global dictionary to hold the cached RSS feeds
 CACHED_RSS_FEEDS = {}
 
+# Configure logging with timestamps
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] - [%(levelname)s]: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+
+# Define response_queue globally
+response_queue = Queue()
 def translate_text(text, target_language='en'):
     """Translate text to a target language."""
     if text is None:
@@ -32,7 +43,7 @@ def detect_language(text):
 
 def update_specific_feed(rss_url, dest_lang):
     """Update a specific cached RSS feed."""
-    print(f"Updating cached RSS feed for {rss_url}...")
+    logging.info("Updating cached RSS feed for %s.", rss_url)
     translated_feed = translate_feed(rss_url, dest_lang)
     CACHED_RSS_FEEDS[(rss_url, dest_lang)] = translated_feed
     Timer(600, lambda: update_specific_feed(rss_url, dest_lang)).start()
@@ -63,10 +74,47 @@ def translate_feed(original_feed_url, target_language='en'):
 
     return feed_gen.rss_str(pretty=True)
 
-class RSSRequestHandler(BaseHTTPRequestHandler):
+def response_worker():
+    """"""
+    logging.info("Worker thread started.")
+    while True:
+        client_socket, response_data = response_queue.get()
+        logging.info("About to process.")
+        try:
+            client_socket.write(response_data)
+        except BrokenPipeError:
+            logging.warning("Client disconnected before the response could be sent.")
+        except Exception as e:
+            logging.error("An error occurred: %s", e)
+        finally:
+            logging.info("Job done.")
+            response_queue.task_done()
+
+
+# Start the response worker thread
+worker_thread = Thread(target=response_worker)
+worker_thread.daemon = True
+worker_thread.start()
+
+class CustomHTTPServer(HTTPServer):
+    def handle_error(self, request, client_address):
+        logging.error("Exception occurred during processing of request from %s", client_address, exc_info=True)
+
+class CustomRequestHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        logging.info("%s - - %s", self.address_string(), format % args)
+
+
+class RSSRequestHandler(CustomRequestHandler):
     """HTTP Request handler class."""
+
     def do_GET(self):
         """Handle GET requests."""
+        if self.path == '/favicon.ico':
+            self.send_response(404)
+            self.end_headers()
+            return
+
         query = urlparse(self.path).query
         query_components = parse_qs(query)
         rss_url = query_components.get('rss_url', [None])[0]
@@ -78,23 +126,33 @@ class RSSRequestHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-type', 'application/rss+xml; charset=utf-8')
             self.end_headers()
-            self.wfile.write(
-                CACHED_RSS_FEEDS.get(
-                    (rss_url, dest_lang), b"RSS feed is being updated, please try again later."
-                )
+            response_data = CACHED_RSS_FEEDS.get(
+                (rss_url, dest_lang), b"RSS feed is being updated, please try again later."
             )
+            try:
+                self.wfile.write(response_data)
+            except BrokenPipeError:
+                logging.warning("Client disconnected before the response could be sent.")
+            except Exception as e:
+                logging.error("An error occurred: %s", e)
+
+            logging.info(
+                "Response sent."
+                )
 
         else:
             self.send_response(400)
             self.send_header('Content-type', 'text/plain')
             self.end_headers()
-            self.wfile.write(b"Missing rss_url parameter.")
+            response_queue.put((self.wfile, b"Missing rss_url parameter."))
+            logging.warning("400 Bad Request: Missing rss_url parameter")
+
 
 def run():
     """Start the HTTP server."""
     server_address = ('', 8080)
-    httpd = HTTPServer(server_address, RSSRequestHandler)
-    print('RSS Translation server is running on port 8080...')
+    httpd = CustomHTTPServer(server_address, RSSRequestHandler)
+    logging.info('RSS Translation server is running on port 8080...')
     httpd.serve_forever()
 
 if __name__ == '__main__':
